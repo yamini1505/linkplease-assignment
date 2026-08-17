@@ -19,9 +19,19 @@ from .schemas import RuleCreate
 
 load_dotenv()
 
-PSEUDOGRAM_API_KEY = os.getenv("PSEUDOGRAM_API_KEY")
+# Load the PseudoGram API key.
+# PSEUDOGRAM_API_KEY is the preferred environment variable.
+PSEUDOGRAM_API_KEY = (
+    os.getenv("PSEUDOGRAM_API_KEY")
+    or os.getenv("API_KEY")
+)
 
 PSEUDOGRAM_BASE_URL = "https://pseudogram-api.onrender.com"
+
+if not PSEUDOGRAM_API_KEY:
+    raise RuntimeError(
+        "PSEUDOGRAM_API_KEY is not configured"
+    )
 
 
 # --------------------------------------------------
@@ -87,7 +97,6 @@ def create_rule(
         "dm_message": new_rule.dm_message
     }
 
-
 # --------------------------------------------------
 # WEBHOOK
 # --------------------------------------------------
@@ -97,8 +106,9 @@ async def webhook(
     request: Request,
     background_tasks: BackgroundTasks
 ):
-    # Read the ORIGINAL request body.
-    # We need the raw body for signature verification.
+    # IMPORTANT:
+    # Read the raw request body BEFORE parsing JSON.
+    # The signature is calculated from these exact bytes.
     body = await request.body()
 
     # Get the signature sent by PseudoGram.
@@ -106,26 +116,26 @@ async def webhook(
         "X-PseudoGram-Signature"
     )
 
-    # If there is no signature, reject the request.
+    # Signature is required.
     if not received_signature:
         raise HTTPException(
             status_code=401,
             detail="Missing webhook signature"
         )
 
-    # Create the signature ourselves using our API key.
+    # Calculate the expected HMAC-SHA256 signature.
     expected_signature = (
         "sha256="
         + hmac.new(
-            PSEUDOGRAM_API_KEY.encode(),
+            PSEUDOGRAM_API_KEY.encode("utf-8"),
             body,
             hashlib.sha256
         ).hexdigest()
     )
 
-    # Compare the received signature with our signature.
+    # Compare signatures safely.
     if not hmac.compare_digest(
-        received_signature,
+        received_signature.strip(),
         expected_signature
     ):
         raise HTTPException(
@@ -133,20 +143,26 @@ async def webhook(
             detail="Invalid webhook signature"
         )
 
-    # The signature is correct.
-    # Now convert the JSON body into a Python dictionary.
-    data = await request.json()
+    # Signature is valid.
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON body"
+        )
 
-    # Return quickly.
-    # The real processing happens in the background.
+    # Process asynchronously so /webhook responds quickly.
     background_tasks.add_task(
         process_webhook,
         data
     )
 
+    # THIS IS THE SUCCESS RESPONSE.
     return {
         "status": "accepted"
     }
+
 
 
 # --------------------------------------------------
